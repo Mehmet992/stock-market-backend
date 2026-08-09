@@ -1,0 +1,29 @@
+{
+  "name": "stock-market-backend",
+  "version": "1.0.0",
+  "description": "Central Market Data Aggregator & Proxy for Stock Market Monitoring App",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "keywords": [
+    "stock-market",
+    "koyeb",
+    "express",
+    "finance-api"
+  ],
+  "author": "Mehmet Murt",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "node-cache": "^5.1.2",
+    "yahoo-finance2": "^4.0.1"
+  }
+}
