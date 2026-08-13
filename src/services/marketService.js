@@ -13,7 +13,7 @@ const CACHE_KEY = 'ALL_MARKET_ASSETS';
 //Circuit breaker state
 let isYahooCircuitOpen = false;
 let yahooCircuitResetTime = 0;
-const CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000;
+const CIRCUIT_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes cooldown when rate limited
 
 /**
  * Checks and updates the Circuit Breaker status
@@ -33,7 +33,7 @@ function shouldAttemptYahoo() {
 function tripYahooCircuit(reason) {
   isYahooCircuitOpen = true;
   yahooCircuitResetTime = Date.now() + CIRCUIT_COOLDOWN_MS;
-  console.warn(`[MarketService] Tripping Yahoo Circuit Breaker! Reason: ${reason}. Cooling down for 5 mins.`);
+  console.warn(`[MarketService] Tripping Yahoo Circuit Breaker! Reason: ${reason}. Cooling down for 10 mins.`);
 }
 
 /**
@@ -142,21 +142,43 @@ function normalizeAlpacaCryptoSnapshot(snapshot, assetConfig) {
 
 //The function that pulls the information from Yahoo Finance endpoint
 async function fetchFromYahoo() {
-  const CHUNK_SIZE = 10;
+  const CHUNK_SIZE = 30;
   const assetChunks = chunkArray(SUPPORTED_ASSETS, CHUNK_SIZE);
   const fetchedQuotesMap = new Map();
 
   for (const chunk of assetChunks) {
     const symbols = chunk.map((a) => a.symbol);
-    const results = await yahooFinance.quote(symbols);
-    const quotes = Array.isArray(results) ? results : [results];
 
-    for (const quote of quotes) {
-      if (quote?.symbol) {
-        fetchedQuotesMap.set(quote.symbol.toUpperCase(), quote);
+    if (config.yahooProxyUrl) {
+      try {
+        const baseUrl = config.yahooProxyUrl.replace(/\/$/, '');
+        const url = `${baseUrl}/v7/finance/quote?symbols=${encodeURIComponent(symbols.join(','))}`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const json = await res.json();
+          const quotes = json?.quoteResponse?.result || [];
+          for (const quote of quotes) {
+            if (quote?.symbol) {
+              fetchedQuotesMap.set(quote.symbol.toUpperCase(), quote);
+            }
+          }
+        } else {
+          console.warn(`[MarketService] Cloudflare Worker proxy returned HTTP ${res.status}`);
+        }
+      } catch (proxyErr) {
+        console.warn(`[MarketService] Cloudflare Worker fetch warning:`, proxyErr.message);
+      }
+    } else {
+      const results = await yahooFinance.quote(symbols);
+      const quotes = Array.isArray(results) ? results : [results];
+
+      for (const quote of quotes) {
+        if (quote?.symbol) {
+          fetchedQuotesMap.set(quote.symbol.toUpperCase(), quote);
+        }
       }
     }
-    await sleep(150);
+    await sleep(200);
   }
 
   //Normalizes all the quotes and return the list
