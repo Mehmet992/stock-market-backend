@@ -9,4 +9,6 @@ export const config = {
   allowedOrigins: process.env.ALLOWED_ORIGINS || '*',
   cacheTtlSeconds: parseInt(process.env.CACHE_TTL_SECONDS || '15', 10),
   fetchIntervalSeconds: parseInt(process.env.FETCH_INTERVAL_SECONDS || '10', 10),
+  alpacaApiKey: process.env.ALPACA_API_KEY || process.env.alpacaApiKey || '',
+  alpacaSecretKey: process.env.ALPACA_SECRET_KEY || process.env.alpacaSecretKey || '',
 };

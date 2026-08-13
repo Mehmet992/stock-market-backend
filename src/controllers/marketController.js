@@ -3,10 +3,12 @@ import { getMarketAssets, getAssetBySymbol } from '../services/marketService.js'
 export async function getAllAssets(req, res, next) {
   try {
     const assets = await getMarketAssets();
+    const sources = [...new Set(assets.map((a) => a.source).filter(Boolean))];
     res.status(200).json({
       success: true,
       count: assets.length,
       timestamp: new Date().toISOString(),
+      sources: sources,
       data: assets,
       error: null,
     });
