@@ -168,7 +168,11 @@ async function fetchFromYahoo() {
 
 //The function that pulls the information from Alpaca
 async function fetchFromAlpaca() {
-  console.log('[MarketService] Routing request through Alpaca Fallback API...');
+  if (!config.alpacaApiKey || !config.alpacaSecretKey) {
+    console.warn('[MarketService] WARNING: Alpaca API Keys (ALPACA_API_KEY / ALPACA_SECRET_KEY) are missing in environment variables! Stock API will return HTTP 401.');
+  } else {
+    console.log('[MarketService] Routing request through Alpaca Fallback API...');
+  }
   const resultsMap = new Map();
   const CHUNK_SIZE = 20;
 
@@ -182,7 +186,7 @@ async function fetchFromAlpaca() {
 
       for (const chunk of chunkedUsStocks) {
         const usStockSymbols = chunk.map((a) => a.symbol).join(',');
-        const url = `https://data.alpaca.markets/v2/stocks/snapshots?symbols=${encodeURIComponent(usStockSymbols)}`;
+        const url = `https://data.alpaca.markets/v2/stocks/snapshots?symbols=${usStockSymbols}&feed=iex`;
 
         const res = await fetch(url, {
           headers: {
@@ -199,6 +203,9 @@ async function fetchFromAlpaca() {
               resultsMap.set(asset.symbol.toUpperCase(), normalizeAlpacaStockSnapshot(snapshot, asset));
             }
           }
+        } else {
+          const errorText = await res.text();
+          console.warn(`[MarketService] Alpaca Stock API returned HTTP ${res.status}: ${errorText}`);
         }
       }
     } catch (error) {
@@ -232,6 +239,9 @@ async function fetchFromAlpaca() {
               resultsMap.set(asset.symbol.toUpperCase(), normalizeAlpacaCryptoSnapshot(snapshot, asset));
             }
           }
+        } else {
+          const errorText = await res.text();
+          console.warn(`[MarketService] Alpaca Crypto API returned HTTP ${res.status}: ${errorText}`);
         }
       }
 
@@ -343,58 +353,6 @@ export async function fetchAllMarketData() {
     source: 'NONE',
     lastUpdated: new Date().toISOString(),
   }));
-  /*
-  const CHUNK_SIZE = 10;
-  const assetChunks = chunkArray(SUPPORTED_ASSETS, CHUNK_SIZE);
-  const fetchedQuotesMap = new Map();
-
-  for (const chunk of assetChunks) {
-    try {
-      const symbols = chunk.map((a) => a.symbol);
-      const results = await yahooFinance.quote(symbols); //Makes the API calls
-      const quotes = Array.isArray(results) ? results : [results];
-
-      for (const quote of quotes) {
-        if (quote && quote.symbol) {
-          fetchedQuotesMap.set(quote.symbol.toUpperCase(), quote);
-        }
-      }
-      // Small pause between chunks to respect rate limits
-      await sleep(150);
-    } catch (chunkError) {
-      console.warn(`[MarketService] Chunk fetch warning:`, chunkError.message);
-    }
-  }
-
-  const normalizedAssets = SUPPORTED_ASSETS.map((assetConfig) => {
-    const quote = fetchedQuotesMap.get(assetConfig.symbol.toUpperCase());
-    if (quote) {
-      return normalizeYahooQuote(quote, assetConfig);
-    }
-    // Return fallback state if quote was missing
-    return {
-      symbol: assetConfig.symbol,
-      displayName: assetConfig.displayName,
-      type: assetConfig.type,
-      exchange: assetConfig.exchange || 'UNKNOWN',
-      price: 0.0,
-      change: 0.0,
-      changePercent: 0.0,
-      high: 0.0,
-      low: 0.0,
-      open: 0.0,
-      previousClose: 0.0,
-      volume: 0,
-      lastUpdated: new Date().toISOString(),
-    };
-  });
-
-  if (normalizedAssets.some((a) => a.price > 0)) {
-    cache.set(CACHE_KEY, normalizedAssets);
-  }
-
-  return normalizedAssets;
-  */
 }
 
 /**
