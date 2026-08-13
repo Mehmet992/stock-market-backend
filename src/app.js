@@ -9,6 +9,9 @@ import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
 
+// Trust reverse proxy load balancers (Render, Koyeb, Cloudflare)
+app.set('trust proxy', 1);
+
 // Security HTTP headers
 app.use(helmet());
 
