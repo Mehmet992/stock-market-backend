@@ -47,7 +47,17 @@ function normalizeAlpacaStockSnapshot(snapshot, assetConfig) {
  */
 function normalizeAlpacaCryptoSnapshot(snapshot, assetConfig) {
   if (!snapshot) return null;
-  const price = snapshot.latestTrade?.p ?? snapshot.dailyBar?.c ?? 0.0;
+
+  // Calculate price from bid/ask orderbook mid-price or latest trade for real-time live tick resolution
+  let price = snapshot.latestTrade?.p ?? 0.0;
+  if (snapshot.latestQuote?.bp && snapshot.latestQuote?.ap) {
+    const mid = (snapshot.latestQuote.bp + snapshot.latestQuote.ap) / 2;
+    if (mid > 0) price = mid;
+  }
+  if (price === 0.0) {
+    price = snapshot.dailyBar?.c ?? 0.0;
+  }
+
   const previousClose = snapshot.prevDailyBar?.c ?? price;
   const change = price - previousClose;
   const changePercent = previousClose > 0 ? (change / previousClose) * 100 : 0.0;
