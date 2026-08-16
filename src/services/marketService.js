@@ -18,19 +18,20 @@ const CACHE_KEY = 'ALL_MARKET_ASSETS';
 export async function fetchAllMarketData() {
   console.log('[MarketService] Initiating categorized market data fetch cycle...');
 
-  // Partition target assets into the two core categories
+  // Partition target assets into the three core categories
   const usAndCryptoAssets = SUPPORTED_ASSETS.filter(
     (a) => (a.type === 'stock' && a.exchange !== 'BIST') || a.type === 'crypto'
   );
   const bistAndForexAssets = SUPPORTED_ASSETS.filter(
-    (a) => a.exchange === 'BIST' || a.symbol.endsWith('.IS') || a.type === 'forex' || a.type === 'metal'
+    (a) => a.exchange === 'BIST' || a.symbol.endsWith('.IS') || a.type === 'forex'
   );
+  const metalAssets = SUPPORTED_ASSETS.filter((a) => a.type === 'metal');
 
   const staleCacheData = cache.get(CACHE_KEY) || [];
   const staleCacheMap = new Map(staleCacheData.map((a) => [a.symbol.toUpperCase(), a]));
 
   // =========================================================================
-  // CATEGORY 1: US STOCKS & CRYPTOCURRENCIES (Alpaca 1st -> Yahoo 2nd -> Cache)
+  // CATEGORY 1: US STOCKS & CRYPTOCURRENCIES (Alpaca 1st -> Bigpara 2nd -> Yahoo 3rd -> Cache)
   // =========================================================================
   let usAndCryptoResults = [];
 
@@ -45,16 +46,33 @@ export async function fetchAllMarketData() {
     console.warn(`[MarketService] US/Crypto Primary (Alpaca) failed: ${err.message}`);
   }
 
-  // Attempt 2 (Fallback): Yahoo Finance for missing US/Crypto assets
+  // Attempt 2 (Fallback): Bigpara -> Yahoo Finance for missing US/Crypto assets
   const fetchedUsCryptoSymbols = new Set(usAndCryptoResults.map((a) => a.symbol.toUpperCase()));
   const missingUsCryptoAssets = usAndCryptoAssets.filter(
     (a) => !fetchedUsCryptoSymbols.has(a.symbol.toUpperCase())
   );
 
-  if (missingUsCryptoAssets.length > 0 && shouldAttemptYahoo()) {
+  if (missingUsCryptoAssets.length > 0) {
     try {
-      console.log(`[MarketService] US/Crypto: Falling back to Yahoo for ${missingUsCryptoAssets.length} missing quotes...`);
-      const yahooFallbackData = await fetchFromYahoo(missingUsCryptoAssets, 'YAHOO_FALLBACK');
+      console.log(`[MarketService] US/Crypto: Falling back to Bigpara for ${missingUsCryptoAssets.length} missing quotes (${missingUsCryptoAssets.map(a => a.symbol).join(', ')})...`);
+      const bigparaFallbackData = await fetchFromBigpara(missingUsCryptoAssets, 'BIGPARA_FALLBACK');
+      const validBigparaData = bigparaFallbackData.filter((a) => a.price > 0);
+      usAndCryptoResults.push(...validBigparaData);
+    } catch (err) {
+      console.warn(`[MarketService] US/Crypto Bigpara Fallback failed: ${err.message}`);
+    }
+  }
+
+  // Attempt 3 (Fallback 2): Yahoo Finance for any remaining missing US/Crypto assets
+  const recheckFetchedUsCryptoSymbols = new Set(usAndCryptoResults.map((a) => a.symbol.toUpperCase()));
+  const stillMissingUsCryptoAssets = usAndCryptoAssets.filter(
+    (a) => !recheckFetchedUsCryptoSymbols.has(a.symbol.toUpperCase())
+  );
+
+  if (stillMissingUsCryptoAssets.length > 0 && shouldAttemptYahoo()) {
+    try {
+      console.log(`[MarketService] US/Crypto: Falling back to Yahoo for ${stillMissingUsCryptoAssets.length} missing quotes...`);
+      const yahooFallbackData = await fetchFromYahoo(stillMissingUsCryptoAssets, 'YAHOO_FALLBACK');
       usAndCryptoResults.push(...yahooFallbackData);
     } catch (err) {
       console.warn(`[MarketService] US/Crypto Fallback (Yahoo) failed: ${err.message}`);
@@ -64,7 +82,7 @@ export async function fetchAllMarketData() {
     }
   }
 
-  // Attempt 3 (Stale Cache / Server Error): Fill remaining missing US/Crypto assets
+  // Fill remaining missing US/Crypto assets with stale cache / error placeholder
   const finalUsCryptoFetchedSymbols = new Set(usAndCryptoResults.map((a) => a.symbol.toUpperCase()));
   for (const assetConfig of usAndCryptoAssets) {
     const symbolKey = assetConfig.symbol.toUpperCase();
@@ -95,43 +113,41 @@ export async function fetchAllMarketData() {
   }
 
   // =========================================================================
-  // CATEGORY 2: BIST STOCKS & FOREX PAIRS (Yahoo 1st -> Bigpara 2nd -> Cache)
+  // CATEGORY 2: BIST STOCKS & FOREX PAIRS (Bigpara 1st -> Yahoo 2nd -> Cache)
   // =========================================================================
   let bistAndForexResults = [];
 
-  // Attempt 1 (Primary): Yahoo Finance
-  if (shouldAttemptYahoo()) {
-    try {
-      const yahooData = await fetchFromYahoo(bistAndForexAssets, 'YAHOO');
-      if (yahooData.length > 0) {
-        bistAndForexResults = yahooData;
-        console.log(`[MarketService] BIST/Forex: Fetched ${yahooData.length}/${bistAndForexAssets.length} quotes from Yahoo Finance.`);
-      }
-    } catch (err) {
-      console.warn(`[MarketService] BIST/Forex Primary (Yahoo) failed: ${err.message}`);
-      if (err.message?.includes('429') || err.status === 429) {
-        tripYahooCircuit('Yahoo HTTP 429 Rate Limit during BIST/Forex Primary');
-      }
+  // Attempt 1 (Primary): Bigpara API
+  try {
+    const bigparaData = await fetchFromBigpara(bistAndForexAssets, 'BIGPARA');
+    if (bigparaData.length > 0) {
+      bistAndForexResults = bigparaData;
+      console.log(`[MarketService] BIST/Forex: Fetched ${bigparaData.length}/${bistAndForexAssets.length} quotes from Bigpara.`);
     }
+  } catch (err) {
+    console.warn(`[MarketService] BIST/Forex Primary (Bigpara) failed: ${err.message}`);
   }
 
-  // Attempt 2 (Fallback): Bigpara API for missing BIST/Forex assets
+  // Attempt 2 (Fallback): Yahoo Finance for missing BIST/Forex assets
   const fetchedBistForexSymbols = new Set(bistAndForexResults.map((a) => a.symbol.toUpperCase()));
   const missingBistForexAssets = bistAndForexAssets.filter(
     (a) => !fetchedBistForexSymbols.has(a.symbol.toUpperCase())
   );
 
-  if (missingBistForexAssets.length > 0) {
+  if (missingBistForexAssets.length > 0 && shouldAttemptYahoo()) {
     try {
-      console.log(`[MarketService] BIST/Forex: Falling back to Bigpara for ${missingBistForexAssets.length} missing quotes...`);
-      const bigparaData = await fetchFromBigpara(missingBistForexAssets);
-      bistAndForexResults.push(...bigparaData);
+      console.log(`[MarketService] BIST/Forex: Falling back to Yahoo for ${missingBistForexAssets.length} missing quotes...`);
+      const yahooData = await fetchFromYahoo(missingBistForexAssets, 'YAHOO_FALLBACK');
+      bistAndForexResults.push(...yahooData);
     } catch (err) {
-      console.warn(`[MarketService] BIST/Forex Fallback (Bigpara) failed: ${err.message}`);
+      console.warn(`[MarketService] BIST/Forex Fallback (Yahoo) failed: ${err.message}`);
+      if (err.message?.includes('429') || err.status === 429) {
+        tripYahooCircuit('Yahoo HTTP 429 Rate Limit during BIST/Forex Fallback');
+      }
     }
   }
 
-  // Attempt 3 (Stale Cache / Server Error): Fill remaining missing BIST/Forex assets
+  // Fill remaining missing BIST/Forex assets with stale cache / error placeholder
   const finalBistForexFetchedSymbols = new Set(bistAndForexResults.map((a) => a.symbol.toUpperCase()));
   for (const assetConfig of bistAndForexAssets) {
     const symbolKey = assetConfig.symbol.toUpperCase();
@@ -162,9 +178,56 @@ export async function fetchAllMarketData() {
   }
 
   // =========================================================================
+  // CATEGORY 3: COMMODITY METALS & ENERGY FUTURES (Yahoo 1st -> Cache)
+  // =========================================================================
+  let metalsResults = [];
+
+  if (shouldAttemptYahoo()) {
+    try {
+      const yahooMetals = await fetchFromYahoo(metalAssets, 'YAHOO');
+      if (yahooMetals.length > 0) {
+        metalsResults = yahooMetals;
+        console.log(`[MarketService] Metals: Fetched ${yahooMetals.length}/${metalAssets.length} quotes from Yahoo Finance.`);
+      }
+    } catch (err) {
+      console.warn(`[MarketService] Metals Primary (Yahoo) failed: ${err.message}`);
+    }
+  }
+
+  // Fill remaining missing Metals assets with stale cache / error placeholder
+  const finalMetalsFetchedSymbols = new Set(metalsResults.map((a) => a.symbol.toUpperCase()));
+  for (const assetConfig of metalAssets) {
+    const symbolKey = assetConfig.symbol.toUpperCase();
+    if (!finalMetalsFetchedSymbols.has(symbolKey)) {
+      if (staleCacheMap.has(symbolKey)) {
+        const staleAsset = staleCacheMap.get(symbolKey);
+        metalsResults.push({ ...staleAsset, source: 'STALE_CACHE' });
+      } else {
+        metalsResults.push({
+          symbol: assetConfig.symbol,
+          displayName: assetConfig.displayName,
+          type: assetConfig.type,
+          exchange: assetConfig.exchange || 'COMMODITY',
+          currency: 'USD',
+          price: 0.0,
+          change: 0.0,
+          changePercent: 0.0,
+          high: 0.0,
+          low: 0.0,
+          open: 0.0,
+          previousClose: 0.0,
+          volume: 0,
+          source: 'SERVER_ERROR',
+          lastUpdated: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
+  // =========================================================================
   // COMBINE RESULTS & UPDATE CACHE
   // =========================================================================
-  const allResults = [...usAndCryptoResults, ...bistAndForexResults];
+  const allResults = [...usAndCryptoResults, ...bistAndForexResults, ...metalsResults];
 
   // Store in-memory cache if we have valid non-error assets
   const validAssets = allResults.filter((a) => a.source !== 'SERVER_ERROR' && a.price > 0);

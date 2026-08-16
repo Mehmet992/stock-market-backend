@@ -3,7 +3,7 @@ import { SUPPORTED_ASSETS } from '../config/assets.js';
 import { config } from '../config/env.js';
 
 // Instantiate YahooFinance v3 client
-const yahooFinance = new YahooFinance();
+const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 
 // Circuit breaker state for Yahoo Finance
 let isYahooCircuitOpen = false;

@@ -19,13 +19,13 @@ function chunkArray(array, chunkSize) {
  */
 function cleanSymbolForBigpara(symbol) {
   if (!symbol) return '';
-  return symbol.toUpperCase().replace('.IS', '').replace('=X', '').replace('=F', '');
+  return symbol.toUpperCase().replace('.IS', '').replace('-USD', 'USD').replace('=X', '').replace('=F', '');
 }
 
 /**
  * Normalizes raw Bigpara payload (`current` object from trade chart API) into MarketAsset format
  */
-function normalizeBigparaQuote(cur, assetConfig) {
+function normalizeBigparaQuote(cur, assetConfig, sourceLabel = 'BIGPARA') {
   if (!cur) return null;
 
   const parseNum = (val) => {
@@ -54,7 +54,7 @@ function normalizeBigparaQuote(cur, assetConfig) {
     open: parseNum(cur.o || cur.open || price),
     previousClose,
     volume: parseNum(cur.tv || cur.volume || 0),
-    source: 'BIGPARA_FALLBACK',
+    source: sourceLabel,
     lastUpdated: new Date().toISOString(),
   };
 }
@@ -62,9 +62,10 @@ function normalizeBigparaQuote(cur, assetConfig) {
 /**
  * Fetches market data for BIST stocks and Forex pairs from Bigpara Live Trade API
  * @param {Array} assets - List of asset config objects to fetch
+ * @param {String} sourceLabel - Custom source tag ('BIGPARA' or 'BIGPARA_FALLBACK')
  * @returns {Promise<Array>} List of normalized MarketAsset objects
  */
-export async function fetchFromBigpara(assets) {
+export async function fetchFromBigpara(assets, sourceLabel = 'BIGPARA') {
   if (!assets || assets.length === 0) return [];
 
   console.log(`[BigparaService] Fetching ${assets.length} BIST/Forex assets from Bigpara Live Trade API...`);
@@ -104,7 +105,7 @@ export async function fetchFromBigpara(assets) {
             const assetConfig = cleanSymbolsMap.get(returnedSymbol);
 
             if (assetConfig) {
-              const normalized = normalizeBigparaQuote(cur, assetConfig);
+              const normalized = normalizeBigparaQuote(cur, assetConfig, sourceLabel);
               if (normalized && normalized.price > 0) {
                 resultsMap.set(assetConfig.symbol.toUpperCase(), normalized);
               }
@@ -141,7 +142,7 @@ export async function fetchFromBigpara(assets) {
         open: 0.0,
         previousClose: 0.0,
         volume: 0,
-        source: 'BIGPARA_FALLBACK',
+        source: sourceLabel,
         lastUpdated: new Date().toISOString(),
       };
     })

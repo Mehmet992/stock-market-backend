@@ -42,7 +42,7 @@ export const SUPPORTED_ASSETS = [
   { symbol: 'BTC-USD', displayName: 'Bitcoin', type: 'crypto', exchange: 'Crypto' },
   { symbol: 'ETH-USD', displayName: 'Ethereum', type: 'crypto', exchange: 'Crypto' },
   { symbol: 'SOL-USD', displayName: 'Solana', type: 'crypto', exchange: 'Crypto' },
-  { symbol: 'BNB-USD', displayName: 'Binance Coin', type: 'crypto', exchange: 'Crypto' },
+  { symbol: 'LTC-USD', displayName: 'Litecoin', type: 'crypto', exchange: 'Crypto' },
   { symbol: 'XRP-USD', displayName: 'Ripple', type: 'crypto', exchange: 'Crypto' },
   { symbol: 'ADA-USD', displayName: 'Cardano', type: 'crypto', exchange: 'Crypto' },
   { symbol: 'DOGE-USD', displayName: 'Dogecoin', type: 'crypto', exchange: 'Crypto' },
