@@ -95,7 +95,9 @@ export async function fetchFromYahoo(assetsToFetch = SUPPORTED_ASSETS, sourceLab
 
   for (const chunk of assetChunks) {
     const symbols = chunk.map((a) => a.symbol);
+    let chunkSuccess = false;
 
+    // 1. Attempt fetch via Cloudflare Worker proxy if configured
     if (config.yahooProxyUrl) {
       try {
         const baseUrl = config.yahooProxyUrl.replace(/\/$/, '');
@@ -109,13 +111,19 @@ export async function fetchFromYahoo(assetsToFetch = SUPPORTED_ASSETS, sourceLab
               fetchedQuotesMap.set(quote.symbol.toUpperCase(), quote);
             }
           }
+          if (quotes.length > 0) {
+            chunkSuccess = true;
+          }
         } else {
-          console.warn(`[YahooService] Cloudflare Worker proxy returned HTTP ${res.status}`);
+          console.warn(`[YahooService] Cloudflare Worker proxy returned HTTP ${res.status}. Falling back to direct yahoo-finance library...`);
         }
       } catch (proxyErr) {
-        console.warn(`[YahooService] Cloudflare Worker fetch warning:`, proxyErr.message);
+        console.warn(`[YahooService] Cloudflare Worker fetch warning: ${proxyErr.message}. Falling back to direct yahoo-finance library...`);
       }
-    } else {
+    }
+
+    // 2. Fallback to direct yahoo-finance2 library call if worker proxy was unconfigured, failed, or returned 401/429/non-200
+    if (!chunkSuccess) {
       try {
         const results = await yahooFinance.quote(symbols);
         const quotes = Array.isArray(results) ? results : [results];
@@ -126,10 +134,13 @@ export async function fetchFromYahoo(assetsToFetch = SUPPORTED_ASSETS, sourceLab
           }
         }
       } catch (err) {
-        console.warn(`[YahooService] Yahoo finance library error:`, err.message);
-        throw err;
+        console.warn(`[YahooService] Direct Yahoo Finance library fetch error:`, err.message);
+        if (err.status === 429 || err.status === 401 || err.message?.includes('429') || err.message?.includes('401')) {
+          tripYahooCircuit(`Yahoo HTTP ${err.status || 401} Rate Limit / Auth Error`);
+        }
       }
     }
+
     await sleep(150);
   }
 
