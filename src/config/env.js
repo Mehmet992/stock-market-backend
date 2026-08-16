@@ -12,4 +12,5 @@ export const config = {
   alpacaApiKey: process.env.ALPACA_API_KEY || process.env.alpacaApiKey || '',
   alpacaSecretKey: process.env.ALPACA_SECRET_KEY || process.env.alpacaSecretKey || '',
   yahooProxyUrl: process.env.YAHOO_PROXY_URL || 'https://stock-market-worker.hacmehmet0117.workers.dev',
+  appSecretKey: process.env.APP_SECRET_KEY || 'stock_market_app_secret_2026_secure_key',
 };

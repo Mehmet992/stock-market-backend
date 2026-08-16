@@ -6,6 +6,7 @@ import { config } from './config/env.js';
 import healthRoutes from './routes/health.js';
 import marketRoutes from './routes/marketRoutes.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { verifyAppSecretKey } from './middleware/authMiddleware.js';
 
 const app = express();
 
@@ -36,7 +37,7 @@ app.use(express.json());
 
 // Routes
 app.use('/', healthRoutes);
-app.use('/api/v1', marketRoutes);
+app.use('/api/v1', verifyAppSecretKey, marketRoutes);
 
 // Centralized error handler
 app.use(errorHandler);
