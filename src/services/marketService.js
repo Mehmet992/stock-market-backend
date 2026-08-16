@@ -1,380 +1,181 @@
 import NodeCache from 'node-cache';
-import YahooFinance from 'yahoo-finance2';
 import { SUPPORTED_ASSETS } from '../config/assets.js';
 import { config } from '../config/env.js';
-
-// Instantiate YahooFinance v3 client
-const yahooFinance = new YahooFinance();
+import { fetchFromAlpaca } from './alpacaService.js';
+import { fetchFromYahoo, shouldAttemptYahoo, tripYahooCircuit } from './yahooService.js';
+import { fetchFromBigpara } from './bigparaService.js';
 
 // Initialize in-memory cache (TTL in seconds)
 const cache = new NodeCache({ stdTTL: config.cacheTtlSeconds, checkperiod: 5 });
 const CACHE_KEY = 'ALL_MARKET_ASSETS';
 
-//Circuit breaker state
-let isYahooCircuitOpen = false;
-let yahooCircuitResetTime = 0;
-const CIRCUIT_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes cooldown when rate limited
-
 /**
- * Checks and updates the Circuit Breaker status
- */
-function shouldAttemptYahoo() {
-  if (!isYahooCircuitOpen) return true;
-
-  if (Date.now() > yahooCircuitResetTime) {
-    console.log('[MarketService] Circuit Breaker reset. Attempting Yahoo Finance again...');
-    isYahooCircuitOpen = false;
-    return true;
-  }
-
-  return false;
-}
-
-function tripYahooCircuit(reason) {
-  isYahooCircuitOpen = true;
-  yahooCircuitResetTime = Date.now() + CIRCUIT_COOLDOWN_MS;
-  console.warn(`[MarketService] Tripping Yahoo Circuit Breaker! Reason: ${reason}. Cooling down for 10 mins.`);
-}
-
-/**
- * Utility to split array into smaller chunks
- */
-function chunkArray(array, chunkSize) {
-  const chunks = [];
-  for (let i = 0; i < array.length; i += chunkSize) {
-    chunks.push(array.slice(i, i + chunkSize));
-  }
-  return chunks;
-}
-
-/**
- * Delay execution for milliseconds
- */
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Normalizes Yahoo Finance raw quote data into standardized MarketAsset format
- */
-function normalizeYahooQuote(quote, assetConfig) {
-  const price = quote?.regularMarketPrice ?? quote?.price ?? 0.0;
-  const change = quote?.regularMarketChange ?? quote?.change ?? 0.0;
-  const changePercent = quote?.regularMarketChangePercent ?? quote?.changePercent ?? 0.0;
-  const high = quote?.regularMarketDayHigh ?? quote?.dayHigh ?? price;
-  const low = quote?.regularMarketDayLow ?? quote?.dayLow ?? price;
-  const open = quote?.regularMarketOpen ?? quote?.open ?? price;
-  const previousClose = quote?.regularMarketPreviousClose ?? quote?.previousClose ?? price;
-  const volume = quote?.regularMarketVolume ?? quote?.volume ?? 0;
-  const source = "YAHOO";
-
-  return {
-    symbol: assetConfig.symbol,
-    displayName: assetConfig.displayName,
-    type: assetConfig.type,
-    exchange: assetConfig.exchange || quote?.fullExchangeName || 'UNKNOWN',
-    currency: quote?.currency || (assetConfig.symbol.endsWith('.IS') ? 'TRY' : 'USD'),
-    price,
-    change,
-    changePercent,
-    high,
-    low,
-    open,
-    previousClose,
-    volume,
-    source,
-    lastUpdated: new Date().toISOString(),
-  };
-}
-
-//Normalizing Alpaca quote according to assetConfig
-function normalizeAlpacaStockSnapshot(snapshot, assetConfig) {
-  if (!snapshot) return null;
-
-  // Latest trade or price fallback from daily bar / prev daily bar
-  const price = snapshot.latestTrade?.p ?? snapshot.dailyBar?.c ?? snapshot.prevDailyBar?.c ?? 0.0;
-  const previousClose = snapshot.prevDailyBar?.c ?? price;
-  const change = price - previousClose;
-  const changePercent = previousClose > 0 ? (change / previousClose) * 100 : 0.0;
-
-  return {
-    symbol: assetConfig.symbol,
-    displayName: assetConfig.displayName,
-    type: assetConfig.type,
-    exchange: assetConfig.exchange || 'IEX',
-    currency: 'USD',
-    price,
-    change,
-    changePercent,
-    high: snapshot.dailyBar?.h ?? price,
-    low: snapshot.dailyBar?.l ?? price,
-    open: snapshot.dailyBar?.o ?? price,
-    previousClose,
-    volume: snapshot.dailyBar?.v ?? 0,
-    source: 'ALPACA_FALLBACK',
-    lastUpdated: new Date().toISOString(),
-  };
-}
-
-function normalizeAlpacaCryptoSnapshot(snapshot, assetConfig) {
-  if (!snapshot) return null;
-  const price = snapshot.latestTrade?.p ?? snapshot.dailyBar?.c ?? 0.0;
-  const previousClose = snapshot.prevDailyBar?.c ?? price;
-  const change = price - previousClose;
-  const changePercent = previousClose > 0 ? (change / previousClose) * 100 : 0.0;
-
-  return {
-    symbol: assetConfig.symbol,
-    displayName: assetConfig.displayName,
-    type: assetConfig.type,
-    exchange: assetConfig.exchange,
-    currency: 'USD',
-    price,
-    change,
-    changePercent,
-    high: snapshot.dailyBar?.h ?? price,
-    low: snapshot.dailyBar?.l ?? price,
-    open: snapshot.dailyBar?.o ?? price,
-    previousClose,
-    volume: snapshot.dailyBar?.v ?? 0,
-    source: 'ALPACA_CRYPTO_FALLBACK',
-    lastUpdated: new Date().toISOString(),
-  };
-}
-
-//The function that pulls the information from Yahoo Finance endpoint
-async function fetchFromYahoo() {
-  const CHUNK_SIZE = 30;
-  const assetChunks = chunkArray(SUPPORTED_ASSETS, CHUNK_SIZE);
-  const fetchedQuotesMap = new Map();
-
-  for (const chunk of assetChunks) {
-    const symbols = chunk.map((a) => a.symbol);
-
-    if (config.yahooProxyUrl) {
-      try {
-        const baseUrl = config.yahooProxyUrl.replace(/\/$/, '');
-        const url = `${baseUrl}/v7/finance/quote?symbols=${encodeURIComponent(symbols.join(','))}`;
-        const res = await fetch(url);
-        if (res.ok) {
-          const json = await res.json();
-          const quotes = json?.quoteResponse?.result || [];
-          for (const quote of quotes) {
-            if (quote?.symbol) {
-              fetchedQuotesMap.set(quote.symbol.toUpperCase(), quote);
-            }
-          }
-        } else {
-          console.warn(`[MarketService] Cloudflare Worker proxy returned HTTP ${res.status}`);
-        }
-      } catch (proxyErr) {
-        console.warn(`[MarketService] Cloudflare Worker fetch warning:`, proxyErr.message);
-      }
-    } else {
-      const results = await yahooFinance.quote(symbols);
-      const quotes = Array.isArray(results) ? results : [results];
-
-      for (const quote of quotes) {
-        if (quote?.symbol) {
-          fetchedQuotesMap.set(quote.symbol.toUpperCase(), quote);
-        }
-      }
-    }
-    await sleep(200);
-  }
-
-  //Normalizes all the quotes and return the list
-  return SUPPORTED_ASSETS.map((assetConfig) => {
-    const quote = fetchedQuotesMap.get(assetConfig.symbol.toUpperCase());
-    return quote ? normalizeYahooQuote(quote, assetConfig) : null;
-  }).filter(Boolean);
-}
-
-//The function that pulls the information from Alpaca
-async function fetchFromAlpaca() {
-  if (!config.alpacaApiKey || !config.alpacaSecretKey) {
-    console.warn('[MarketService] WARNING: Alpaca API Keys (ALPACA_API_KEY / ALPACA_SECRET_KEY) are missing in environment variables! Stock API will return HTTP 401.');
-  } else {
-    console.log('[MarketService] Routing request through Alpaca Fallback API...');
-  }
-  const resultsMap = new Map();
-  const CHUNK_SIZE = 20;
-
-  const usStocks = SUPPORTED_ASSETS.filter((a) => a.type === 'stock' && a.exchange !== 'BIST');
-  const cryptos = SUPPORTED_ASSETS.filter((a) => a.type === 'crypto');
-
-  //Fetch US stocks in chunks
-  if (usStocks.length > 0) {
-    try {
-      const chunkedUsStocks = chunkArray(usStocks, CHUNK_SIZE);
-
-      for (const chunk of chunkedUsStocks) {
-        const usStockSymbols = chunk.map((a) => a.symbol).join(',');
-        const url = `https://data.alpaca.markets/v2/stocks/snapshots?symbols=${usStockSymbols}&feed=iex`;
-
-        const res = await fetch(url, {
-          headers: {
-            'APCA-API-KEY-ID': config.alpacaApiKey,
-            'APCA-API-SECRET-KEY': config.alpacaSecretKey,
-          },
-        });
-
-        if (res.ok) {
-          const stockData = await res.json();
-          for (const asset of chunk) {
-            const snapshot = stockData[asset.symbol.toUpperCase()];
-            if (snapshot) {
-              resultsMap.set(asset.symbol.toUpperCase(), normalizeAlpacaStockSnapshot(snapshot, asset));
-            }
-          }
-        } else {
-          const errorText = await res.text();
-          console.warn(`[MarketService] Alpaca Stock API returned HTTP ${res.status}: ${errorText}`);
-        }
-      }
-    } catch (error) {
-      console.warn('[MarketService] Alpaca US Stock Fallback Error:', error.message);
-    }
-  }
-
-  if (cryptos.length > 0) {
-    try {
-      const chunkedCryptos = chunkArray(cryptos, CHUNK_SIZE);
-
-      for (const chunk of chunkedCryptos) {
-        const cryptoSymbols = chunk.map((a) => a.symbol.replace('-', '/')).join(',');
-        const url = `https://data.alpaca.markets/v1beta3/crypto/us/snapshots?symbols=${encodeURIComponent(cryptoSymbols)}`;
-
-        const res = await fetch(url, {
-          headers: {
-            'APCA-API-KEY-ID': config.alpacaApiKey,
-            'APCA-API-SECRET-KEY': config.alpacaSecretKey,
-          },
-        });
-
-        if (res.ok) {
-          const cryptoData = await res.json();
-          const snapshots = cryptoData.snapshots || {};
-
-          for (const asset of chunk) {
-            const symbol = asset.symbol.replace('-', '/').toUpperCase();
-            const snapshot = snapshots[symbol];
-            if (snapshot) {
-              resultsMap.set(asset.symbol.toUpperCase(), normalizeAlpacaCryptoSnapshot(snapshot, asset));
-            }
-          }
-        } else {
-          const errorText = await res.text();
-          console.warn(`[MarketService] Alpaca Crypto API returned HTTP ${res.status}: ${errorText}`);
-        }
-      }
-
-    } catch (error) {
-      console.warn("[MarketService] Error Loading Alpaca Crypto Assets: ", error.message);
-    }
-  }
-
-  const cachedData = cache.get(CACHE_KEY) || [];
-  const cachedMap = new Map(cachedData.map((a) => [a.symbol.toUpperCase(), a]));
-
-  return SUPPORTED_ASSETS.map((assetConfig) => {
-    const symbolKey = assetConfig.symbol.toUpperCase();
-
-    // Priority A: Fresh Alpaca fallback data
-    if (resultsMap.has(symbolKey)) {
-      return resultsMap.get(symbolKey);
-    }
-
-    // Priority B: Stale Cache (preserves BIST/Forex/Metals prices during Yahoo downtime)
-    if (cachedMap.has(symbolKey)) {
-      const staleAsset = cachedMap.get(symbolKey);
-      return { ...staleAsset, source: 'STALE_CACHE' };
-    }
-
-    // Priority C: Zeroed fallback state
-    return {
-      symbol: assetConfig.symbol,
-      displayName: assetConfig.displayName,
-      type: assetConfig.type,
-      exchange: assetConfig.exchange,
-      currency: assetConfig.symbol.endsWith('.IS') ? 'TRY' : 'USD',
-      price: 0.0,
-      change: 0.0,
-      changePercent: 0.0,
-      high: 0.0,
-      low: 0.0,
-      open: 0.0,
-      previousClose: 0.0,
-      volume: 0,
-      source: 'NONE',
-      lastUpdated: new Date().toISOString(),
-    };
-  });
-}
-
-
-
-
-
-/**
- * Fetches latest quotes in chunked batches to avoid rate limits
+ * Executes Category-Based Multi-Tier API Fallback Routing:
+ * 
+ * 1. US Stocks & Cryptos: Alpaca (Primary) -> Yahoo Finance (Fallback) -> Stale Cache -> Server Error
+ * 2. BIST Stocks & Forex: Yahoo Finance (Primary) -> Bigpara (Fallback) -> Stale Cache -> Server Error
  */
 export async function fetchAllMarketData() {
-  let assets = [];
+  console.log('[MarketService] Initiating categorized market data fetch cycle...');
 
-  //1. Attempt: Attempt to fetch from Yahoo Finance
+  // Partition target assets into the two core categories
+  const usAndCryptoAssets = SUPPORTED_ASSETS.filter(
+    (a) => (a.type === 'stock' && a.exchange !== 'BIST') || a.type === 'crypto'
+  );
+  const bistAndForexAssets = SUPPORTED_ASSETS.filter(
+    (a) => a.exchange === 'BIST' || a.symbol.endsWith('.IS') || a.type === 'forex' || a.type === 'metal'
+  );
+
+  const staleCacheData = cache.get(CACHE_KEY) || [];
+  const staleCacheMap = new Map(staleCacheData.map((a) => [a.symbol.toUpperCase(), a]));
+
+  // =========================================================================
+  // CATEGORY 1: US STOCKS & CRYPTOCURRENCIES (Alpaca 1st -> Yahoo 2nd -> Cache)
+  // =========================================================================
+  let usAndCryptoResults = [];
+
+  // Attempt 1 (Primary): Alpaca Market API
+  try {
+    const alpacaData = await fetchFromAlpaca(usAndCryptoAssets);
+    if (alpacaData.length > 0) {
+      usAndCryptoResults = alpacaData;
+      console.log(`[MarketService] US/Crypto: Fetched ${alpacaData.length}/${usAndCryptoAssets.length} quotes from Alpaca.`);
+    }
+  } catch (err) {
+    console.warn(`[MarketService] US/Crypto Primary (Alpaca) failed: ${err.message}`);
+  }
+
+  // Attempt 2 (Fallback): Yahoo Finance for missing US/Crypto assets
+  const fetchedUsCryptoSymbols = new Set(usAndCryptoResults.map((a) => a.symbol.toUpperCase()));
+  const missingUsCryptoAssets = usAndCryptoAssets.filter(
+    (a) => !fetchedUsCryptoSymbols.has(a.symbol.toUpperCase())
+  );
+
+  if (missingUsCryptoAssets.length > 0 && shouldAttemptYahoo()) {
+    try {
+      console.log(`[MarketService] US/Crypto: Falling back to Yahoo for ${missingUsCryptoAssets.length} missing quotes...`);
+      const yahooFallbackData = await fetchFromYahoo(missingUsCryptoAssets, 'YAHOO_FALLBACK');
+      usAndCryptoResults.push(...yahooFallbackData);
+    } catch (err) {
+      console.warn(`[MarketService] US/Crypto Fallback (Yahoo) failed: ${err.message}`);
+      if (err.message?.includes('429') || err.status === 429) {
+        tripYahooCircuit('Yahoo HTTP 429 Rate Limit during US/Crypto Fallback');
+      }
+    }
+  }
+
+  // Attempt 3 (Stale Cache / Server Error): Fill remaining missing US/Crypto assets
+  const finalUsCryptoFetchedSymbols = new Set(usAndCryptoResults.map((a) => a.symbol.toUpperCase()));
+  for (const assetConfig of usAndCryptoAssets) {
+    const symbolKey = assetConfig.symbol.toUpperCase();
+    if (!finalUsCryptoFetchedSymbols.has(symbolKey)) {
+      if (staleCacheMap.has(symbolKey)) {
+        const staleAsset = staleCacheMap.get(symbolKey);
+        usAndCryptoResults.push({ ...staleAsset, source: 'STALE_CACHE' });
+      } else {
+        usAndCryptoResults.push({
+          symbol: assetConfig.symbol,
+          displayName: assetConfig.displayName,
+          type: assetConfig.type,
+          exchange: assetConfig.exchange || 'NASDAQ',
+          currency: 'USD',
+          price: 0.0,
+          change: 0.0,
+          changePercent: 0.0,
+          high: 0.0,
+          low: 0.0,
+          open: 0.0,
+          previousClose: 0.0,
+          volume: 0,
+          source: 'SERVER_ERROR',
+          lastUpdated: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
+  // =========================================================================
+  // CATEGORY 2: BIST STOCKS & FOREX PAIRS (Yahoo 1st -> Bigpara 2nd -> Cache)
+  // =========================================================================
+  let bistAndForexResults = [];
+
+  // Attempt 1 (Primary): Yahoo Finance
   if (shouldAttemptYahoo()) {
     try {
-      assets = await fetchFromYahoo();
-      if (assets.length > 0) {
-        cache.set(CACHE_KEY, assets);
-        return assets;
+      const yahooData = await fetchFromYahoo(bistAndForexAssets, 'YAHOO');
+      if (yahooData.length > 0) {
+        bistAndForexResults = yahooData;
+        console.log(`[MarketService] BIST/Forex: Fetched ${yahooData.length}/${bistAndForexAssets.length} quotes from Yahoo Finance.`);
       }
-    } catch (error) {
-      const status = error.status || error.statusCode || error.response?.status;
-      const message = error.message || "";
+    } catch (err) {
+      console.warn(`[MarketService] BIST/Forex Primary (Yahoo) failed: ${err.message}`);
+      if (err.message?.includes('429') || err.status === 429) {
+        tripYahooCircuit('Yahoo HTTP 429 Rate Limit during BIST/Forex Primary');
+      }
+    }
+  }
 
-      if (status === 429 || status === 403 || status === 401 || message.includes("429")) {
-        tripYahooCircuit(`Received HTTP ${status || 429} Rate Limit/Block from Yahoo`);
+  // Attempt 2 (Fallback): Bigpara API for missing BIST/Forex assets
+  const fetchedBistForexSymbols = new Set(bistAndForexResults.map((a) => a.symbol.toUpperCase()));
+  const missingBistForexAssets = bistAndForexAssets.filter(
+    (a) => !fetchedBistForexSymbols.has(a.symbol.toUpperCase())
+  );
+
+  if (missingBistForexAssets.length > 0) {
+    try {
+      console.log(`[MarketService] BIST/Forex: Falling back to Bigpara for ${missingBistForexAssets.length} missing quotes...`);
+      const bigparaData = await fetchFromBigpara(missingBistForexAssets);
+      bistAndForexResults.push(...bigparaData);
+    } catch (err) {
+      console.warn(`[MarketService] BIST/Forex Fallback (Bigpara) failed: ${err.message}`);
+    }
+  }
+
+  // Attempt 3 (Stale Cache / Server Error): Fill remaining missing BIST/Forex assets
+  const finalBistForexFetchedSymbols = new Set(bistAndForexResults.map((a) => a.symbol.toUpperCase()));
+  for (const assetConfig of bistAndForexAssets) {
+    const symbolKey = assetConfig.symbol.toUpperCase();
+    if (!finalBistForexFetchedSymbols.has(symbolKey)) {
+      if (staleCacheMap.has(symbolKey)) {
+        const staleAsset = staleCacheMap.get(symbolKey);
+        bistAndForexResults.push({ ...staleAsset, source: 'STALE_CACHE' });
       } else {
-        console.warn(`[MarketService] Yahoo fetch failed: ${message}, attempting fallback ...`)
+        bistAndForexResults.push({
+          symbol: assetConfig.symbol,
+          displayName: assetConfig.displayName,
+          type: assetConfig.type,
+          exchange: assetConfig.exchange || 'BIST',
+          currency: assetConfig.symbol.endsWith('.IS') ? 'TRY' : 'USD',
+          price: 0.0,
+          change: 0.0,
+          changePercent: 0.0,
+          high: 0.0,
+          low: 0.0,
+          open: 0.0,
+          previousClose: 0.0,
+          volume: 0,
+          source: 'SERVER_ERROR',
+          lastUpdated: new Date().toISOString(),
+        });
       }
     }
   }
 
-  //2. Attempt: Attempt to fetch from Alpaca
-  try {
-    assets = await fetchFromAlpaca();
-    if (assets.length > 0) {
-      cache.set(CACHE_KEY, assets);
-      return assets;
-    }
-  } catch (error) {
-    console.error("[MarketService] Alpaca fallback failed:", error.message)
+  // =========================================================================
+  // COMBINE RESULTS & UPDATE CACHE
+  // =========================================================================
+  const allResults = [...usAndCryptoResults, ...bistAndForexResults];
+
+  // Store in-memory cache if we have valid non-error assets
+  const validAssets = allResults.filter((a) => a.source !== 'SERVER_ERROR' && a.price > 0);
+  if (validAssets.length > 0) {
+    cache.set(CACHE_KEY, allResults);
   }
 
-  //3. Attempt: Return the existing cache
-  const staleCache = cache.get(CACHE_KEY);
-  if (staleCache) {
-    console.warn('[MarketService] Serving stale cache data due to provider failures.');
-    return staleCache;
-  }
+  const activeSources = [...new Set(allResults.map((a) => a.source))];
+  console.log(`[MarketService] Completed fetch cycle. ${allResults.length} total assets (${validAssets.length} active). Sources: [${activeSources.join(', ')}]`);
 
-  //4. Attempt : Ultimate Fallback (If no cache exists at startup and both providers fail)
-  return SUPPORTED_ASSETS.map((asset) => ({
-    symbol: asset.symbol,
-    displayName: asset.displayName,
-    type: asset.type,
-    exchange: asset.exchange || 'UNKNOWN',
-    price: 0.0,
-    change: 0.0,
-    changePercent: 0.0,
-    high: 0.0,
-    low: 0.0,
-    open: 0.0,
-    previousClose: 0.0,
-    volume: 0,
-    source: 'NONE',
-    lastUpdated: new Date().toISOString(),
-  }));
+  return allResults;
 }
 
 /**
@@ -382,7 +183,7 @@ export async function fetchAllMarketData() {
  */
 export async function getMarketAssets() {
   const cachedData = cache.get(CACHE_KEY);
-  if (cachedData) {
+  if (cachedData && cachedData.length > 0) {
     return cachedData;
   }
   return await fetchAllMarketData();
